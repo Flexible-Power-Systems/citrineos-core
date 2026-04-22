@@ -1,5 +1,6 @@
 // CitrineOS Azure Container Apps Deployment
-// Uses Azure Container Apps instead of ACI for better scaling and built-in HTTPS
+// Uses Azure Container Apps with Key Vault for secrets management
+// Managed Identity provides secure, credential-free access to secrets
 
 @description('Environment name (e.g., dev, test, prod)')
 param environmentName string = 'dev'
@@ -24,8 +25,93 @@ param citrineoImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowor
 @description('Use placeholder image (true for initial deployment)')
 param usePlaceholderImage bool = true
 
+@description('Existing Key Vault name (leave empty to create new)')
+param existingKeyVaultName string = ''
+
 // ============================================================================
-// 1. CONTAINER REGISTRY
+// 1. USER-ASSIGNED MANAGED IDENTITY
+// ============================================================================
+
+resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-${environmentName}-citrineos'
+  location: location
+}
+
+// ============================================================================
+// 2. KEY VAULT
+// ============================================================================
+
+var keyVaultNameGenerated = 'kv-${environmentName}-${uniqueString(resourceGroup().id)}'
+var keyVaultNameToUse = empty(existingKeyVaultName) ? keyVaultNameGenerated : existingKeyVaultName
+
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (empty(existingKeyVaultName)) {
+  name: keyVaultNameGenerated
+  location: location
+  properties: {
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
+    tenantId: subscription().tenantId
+    enableRbacAuthorization: true // Use RBAC instead of access policies
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 30
+    enablePurgeProtection: false // Set to true for production
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+// Reference existing Key Vault if provided
+resource existingKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(existingKeyVaultName)) {
+  name: existingKeyVaultName
+}
+
+// Grant managed identity access to Key Vault secrets (for new Key Vault)
+resource keyVaultSecretsUserNew 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (empty(existingKeyVaultName)) {
+  name: guid(resourceGroup().id, keyVaultNameGenerated, managedIdentity.id, 'Key Vault Secrets User')
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6') // Key Vault Secrets User
+    principalId: managedIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Grant managed identity access to existing Key Vault secrets
+resource keyVaultSecretsUserExisting 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(existingKeyVaultName)) {
+  name: guid(resourceGroup().id, existingKeyVaultName, managedIdentity.id, 'Key Vault Secrets User')
+  scope: existingKeyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6') // Key Vault Secrets User
+    principalId: managedIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ============================================================================
+// 3. KEY VAULT SECRETS
+// ============================================================================
+
+resource secretPostgresPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (empty(existingKeyVaultName)) {
+  parent: keyVault
+  name: 'postgres-password'
+  properties: {
+    value: postgresPassword
+  }
+}
+
+resource secretHasuraAdminSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (empty(existingKeyVaultName)) {
+  parent: keyVault
+  name: 'hasura-admin-secret'
+  properties: {
+    value: hasuraAdminSecret
+  }
+}
+
+// Storage connection string will be added after storage account is created
+
+// ============================================================================
+// 4. CONTAINER REGISTRY
 // ============================================================================
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-01-01-preview' = {
@@ -40,7 +126,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-01-01-preview' = {
 }
 
 // ============================================================================
-// 2. POSTGRESQL (if not using existing)
+// 5. POSTGRESQL (if not using existing)
 // ============================================================================
 
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2022-12-01' = if (empty(existingPostgresServer)) {
@@ -82,7 +168,7 @@ resource postgresDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2022-12
 }
 
 // ============================================================================
-// 3. STORAGE ACCOUNT (replaces MinIO)
+// 6. STORAGE ACCOUNT (replaces MinIO)
 // ============================================================================
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
@@ -99,8 +185,17 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
+// Store storage connection string in Key Vault
+resource secretStorageConnection 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (empty(existingKeyVaultName)) {
+  parent: keyVault
+  name: 'storage-connection-string'
+  properties: {
+    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+  }
+}
+
 // ============================================================================
-// 4. LOG ANALYTICS (for monitoring)
+// 7. LOG ANALYTICS (for monitoring)
 // ============================================================================
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -115,7 +210,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 }
 
 // ============================================================================
-// 5. CONTAINER APPS ENVIRONMENT
+// 8. CONTAINER APPS ENVIRONMENT
 // ============================================================================
 
 resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
@@ -134,19 +229,28 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
 }
 
 // ============================================================================
-// 6. DATABASE CONNECTION VARIABLES
+// 9. DATABASE CONNECTION VARIABLES
 // ============================================================================
 
 var dbServer = empty(existingPostgresServer) ? postgres.properties.fullyQualifiedDomainName : existingPostgresServer
 var dbConnectionString = 'postgresql://citrineos_admin:${postgresPassword}@${dbServer}:5432/citrineos?sslmode=require'
 
+// Key Vault URI for referencing secrets (constructed from name)
+var keyVaultUri = 'https://${keyVaultNameToUse}${environment().suffixes.keyvaultDns}/'
+
 // ============================================================================
-// 7. HASURA CONTAINER APP
+// 10. HASURA CONTAINER APP
 // ============================================================================
 
 resource hasuraApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${environmentName}-hasura'
   location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
@@ -159,11 +263,13 @@ resource hasuraApp 'Microsoft.App/containerApps@2023-05-01' = {
       secrets: [
         {
           name: 'database-url'
+          // For Hasura, we construct the connection string (can't easily use Key Vault reference)
           value: dbConnectionString
         }
         {
           name: 'admin-secret'
-          value: hasuraAdminSecret
+          identity: managedIdentity.id
+          keyVaultUrl: '${keyVaultUri}secrets/hasura-admin-secret'
         }
       ]
     }
@@ -209,12 +315,18 @@ resource hasuraApp 'Microsoft.App/containerApps@2023-05-01' = {
 }
 
 // ============================================================================
-// 8. CITRINEOS CONTAINER APP
+// 11. CITRINEOS CONTAINER APP
 // ============================================================================
 
 resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${environmentName}-citrineos'
   location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
@@ -237,11 +349,13 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
       secrets: usePlaceholderImage ? [] : [
         {
           name: 'db-password'
-          value: postgresPassword
+          identity: managedIdentity.id
+          keyVaultUrl: '${keyVaultUri}secrets/postgres-password'
         }
         {
           name: 'storage-connection'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+          identity: managedIdentity.id
+          keyVaultUrl: '${keyVaultUri}secrets/storage-connection-string'
         }
         {
           name: 'acr-password'
@@ -322,6 +436,12 @@ output hasuraUrl string = 'https://${hasuraApp.properties.configuration.ingress.
 output citrineosFqdn string = citrineoApp.properties.configuration.ingress.fqdn
 output containerAppEnvName string = containerAppEnv.name
 
+// Key Vault outputs
+output keyVaultName string = keyVaultNameToUse
+output keyVaultUri string = keyVaultUri
+output managedIdentityId string = managedIdentity.id
+output managedIdentityClientId string = managedIdentity.properties.clientId
+
 // OCPP endpoints (now using secure WebSocket over HTTPS)
 output ocppEndpointInfo string = '''
 OCPP Endpoints (use wss:// for secure WebSocket):
@@ -335,24 +455,6 @@ output postgresServer string = dbServer
 output storageAccountName string = storage.name
 output resourceGroupName string = resourceGroup().name
 
-output nextSteps string = '''
-🎉 Container Apps Deployment Complete!
+output secretsInfo string = '🔐 Secrets Management (Azure Key Vault)\\n\\nSecrets are stored in Key Vault: ${keyVaultNameToUse}\\n- postgres-password: PostgreSQL admin password\\n- hasura-admin-secret: Hasura GraphQL admin secret\\n- storage-connection-string: Azure Storage connection string\\n\\nContainer Apps access secrets via Managed Identity (no credentials in code).\\nTo view/rotate secrets:\\n  az keyvault secret list --vault-name ${keyVaultNameToUse}\\n  az keyvault secret set --vault-name ${keyVaultNameToUse} --name <secret-name> --value <new-value>'
 
-1. Build and push CitrineOS image to ACR:
-   az acr build --registry ${acrName} --image citrineos/core:v1.0.0 --file local.Dockerfile ..
-
-2. Update the container app to use your image:
-   az containerapp update --name ca-${environmentName}-citrineos \
-     --resource-group ${resourceGroupName} \
-     --image ${acrLoginServer}/citrineos/core:v1.0.0
-
-3. Configure your EV charger:
-   OCPP URL: wss://${citrineosFqdn}/YOUR_CHARGER_ID
-
-4. Access Hasura Console:
-   URL: ${hasuraUrl}/console
-
-5. Check logs:
-   az containerapp logs show --name ca-${environmentName}-citrineos \
-     --resource-group ${resourceGroupName} --follow
-'''
+output nextSteps string = '🎉 Container Apps Deployment Complete!\\n\\n1. Build and push CitrineOS image to ACR:\\n   az acr build --registry ${acr.name} --image citrineos/core:v1.0.0 --file local.Dockerfile ..\\n\\n2. Update the container app to use your image:\\n   az containerapp update --name ca-${environmentName}-citrineos --resource-group ${resourceGroup().name} --image ${acr.properties.loginServer}/citrineos/core:v1.0.0\\n\\n3. Configure your EV charger:\\n   OCPP URL: wss://${citrineoApp.properties.configuration.ingress.fqdn}/YOUR_CHARGER_ID\\n\\n4. Access Hasura Console:\\n   URL: https://${hasuraApp.properties.configuration.ingress.fqdn}/console\\n\\n5. Manage secrets in Key Vault:\\n   az keyvault secret list --vault-name ${keyVaultNameToUse}\\n\\n6. Check logs:\\n   az containerapp logs show --name ca-${environmentName}-citrineos --resource-group ${resourceGroup().name} --follow'

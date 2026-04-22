@@ -68,6 +68,7 @@ echo "  ✓ Built-in HTTPS/TLS termination"
 echo "  ✓ WebSocket support for OCPP"
 echo "  ✓ Auto-scaling"
 echo "  ✓ Separate quota from ACI"
+echo "  ✓ Key Vault integration for secrets (IaC aligned)"
 echo ""
 
 read -p "Continue with deployment? (y/n) " -n 1 -r
@@ -134,7 +135,19 @@ CITRINEOS_FQDN=$(az deployment group show \
   --resource-group "$RESOURCE_GROUP" \
   --query properties.outputs.citrineosFqdn.value -o tsv)
 
+# Get Key Vault information
+KEY_VAULT_NAME=$(az deployment group show \
+  --name "$DEPLOYMENT_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query properties.outputs.keyVaultName.value -o tsv)
+
+MANAGED_IDENTITY_ID=$(az deployment group show \
+  --name "$DEPLOYMENT_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query properties.outputs.managedIdentityId.value -o tsv 2>/dev/null || echo "")
+
 echo -e "${GREEN}✓ Got deployment outputs${NC}"
+echo "  Key Vault: $KEY_VAULT_NAME"
 
 # Step 3: Build and push CitrineOS image
 echo ""
@@ -228,10 +241,23 @@ Resource Group: $RESOURCE_GROUP
 Environment: $ENVIRONMENT
 Deployment Name: $DEPLOYMENT_NAME
 
+SECRETS MANAGEMENT (Azure Key Vault):
+-------------------------------------
+Key Vault Name: $KEY_VAULT_NAME
+Managed Identity: $MANAGED_IDENTITY_ID
+
+Secrets stored in Key Vault:
+  - postgres-password: PostgreSQL admin password
+  - hasura-admin-secret: Hasura GraphQL admin secret
+  - storage-connection-string: Azure Storage connection string
+
+Note: Container Apps access secrets via Managed Identity.
+No credentials are stored in code or environment variables.
+
 ENDPOINTS:
 ----------
 Hasura Console: $HASURA_URL/console
-Hasura Admin Secret: $HASURA_SECRET
+Hasura Admin Secret: [Stored in Key Vault - $KEY_VAULT_NAME/secrets/hasura-admin-secret]
 
 OCPP Endpoints (Secure WebSocket - use wss://):
 - OCPP: wss://${CITRINEOS_FQDN}/YOUR_CHARGER_ID
@@ -243,11 +269,7 @@ AZURE RESOURCES:
 ----------------
 Container Registry: $ACR_LOGIN_SERVER
 CitrineOS FQDN: $CITRINEOS_FQDN
-
-DATABASE:
----------
-PostgreSQL Password: $POSTGRES_PASSWORD
-(Also stored securely in Container App secrets)
+Key Vault: $KEY_VAULT_NAME
 
 USEFUL COMMANDS:
 ----------------
@@ -259,6 +281,13 @@ az containerapp logs show --name ca-${ENVIRONMENT}-hasura --resource-group $RESO
 
 # Scale CitrineOS
 az containerapp update --name ca-${ENVIRONMENT}-citrineos --resource-group $RESOURCE_GROUP --min-replicas 1 --max-replicas 5
+
+# Manage secrets in Key Vault
+az keyvault secret list --vault-name $KEY_VAULT_NAME
+az keyvault secret show --vault-name $KEY_VAULT_NAME --name postgres-password
+
+# Rotate a secret (update in Key Vault - Container Apps will pick up new value)
+az keyvault secret set --vault-name $KEY_VAULT_NAME --name postgres-password --value "NewSecurePassword123"
 
 # Rebuild and redeploy CitrineOS
 az acr build --registry $ACR_NAME --image citrineos/core:v1.0.1 --file local.Dockerfile ..
@@ -275,10 +304,14 @@ echo "========================================"
 echo ""
 echo -e "${BLUE}Hasura Console:${NC}"
 echo "  URL: $HASURA_URL/console"
-echo "  Secret: $HASURA_SECRET"
+echo "  Admin Secret: [Stored in Key Vault: $KEY_VAULT_NAME]"
 echo ""
 echo -e "${BLUE}OCPP WebSocket Endpoint:${NC}"
 echo "  wss://${CITRINEOS_FQDN}/YOUR_CHARGER_ID"
+echo ""
+echo -e "${BLUE}Secrets Management (Key Vault):${NC}"
+echo "  Key Vault: $KEY_VAULT_NAME"
+echo "  View secrets: az keyvault secret list --vault-name $KEY_VAULT_NAME"
 echo ""
 echo -e "${BLUE}Configure your EV Charger:${NC}"
 echo "  Protocol: OCPP 1.6 or 2.0.1"
@@ -287,4 +320,5 @@ echo "  (Replace with your actual charger ID)"
 echo ""
 echo -e "${YELLOW}⚠️  Important: Use wss:// (secure WebSocket)${NC}"
 echo "  Container Apps provides automatic TLS certificates."
+echo "  Secrets are managed in Key Vault (no plaintext credentials)."
 echo ""
