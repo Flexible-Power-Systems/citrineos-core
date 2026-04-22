@@ -10,29 +10,54 @@
 
 ## 🚀 Quick Start
 
-### Option 1: Automated Script (Recommended)
+### Option 1: Azure Container Apps (Recommended)
+
+Container Apps provides built-in HTTPS, auto-scaling, and WebSocket support for OCPP.
 
 ```bash
 # Navigate to Server directory
-cd .
+cd Server/
 
 # Make script executable
-chmod +x deploy-to-azure.sh
+chmod +x deploy-container-apps.sh
 
 # Deploy (replace YOUR_RESOURCE_GROUP with actual name)
-./deploy-to-azure.sh YOUR_RESOURCE_GROUP
+./deploy-container-apps.sh YOUR_RESOURCE_GROUP
 
 # Or if you have existing PostgreSQL server:
-./deploy-to-azure.sh YOUR_RESOURCE_GROUP existing-postgres-server-name.postgres.database.azure.com
+./deploy-container-apps.sh YOUR_RESOURCE_GROUP existing-postgres-server-name.postgres.database.azure.com
 ```
 
 **What it does:**
 1. Creates Azure Container Registry
 2. Deploys PostgreSQL database (or uses existing)
-3. Deploys Hasura GraphQL engine
-4. Builds CitrineOS container image
-5. Deploys CitrineOS to Azure Container Instances
-6. Configures networking and monitoring
+3. Creates Container Apps Environment with Log Analytics
+4. Deploys Hasura GraphQL engine with HTTPS
+5. Builds CitrineOS container image
+6. Deploys CitrineOS to Container Apps with auto-TLS
+
+**Benefits:**
+- ✅ Automatic HTTPS/TLS certificates
+- ✅ WebSocket support for OCPP 1.6 and 2.0.1
+- ✅ Auto-scaling (0-5 replicas)
+- ✅ No ACI quota limitations
+
+**Time:** ~15-20 minutes
+
+---
+
+### Option 2: Azure Container Instances (Legacy)
+
+Use this if you need simpler deployment or have specific ACI requirements.
+
+```bash
+cd Server/
+chmod +x deploy-to-azure.sh
+./deploy-to-azure.sh YOUR_RESOURCE_GROUP
+```
+
+**Note:** ACI has regional core quota limits (typically 10 cores).
+If you hit `ContainerGroupQuotaReached` errors, use Container Apps instead.
 
 **Time:** ~15-20 minutes
 
