@@ -224,24 +224,11 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
       ]
       ingress: {
         external: true
-        targetPort: 8080  // Main HTTP port for OCPP WebSocket
+        targetPort: 8080  // Main HTTP port - CitrineOS handles OCPP WebSocket here
         transport: 'http'
         allowInsecure: false
-        // Additional TCP ports for OCPP can be added via additionalPortMappings
-        additionalPortMappings: [
-          {
-            external: true
-            targetPort: 8081  // OCPP 2.0.1 SP0
-          }
-          {
-            external: true
-            targetPort: 8082  // OCPP 2.0.1 SP1  
-          }
-          {
-            external: true
-            targetPort: 8092  // OCPP 1.6
-          }
-        ]
+        // Note: Container Apps supports WebSocket connections on the main ingress port
+        // Configure CitrineOS to use port 8080 for all OCPP protocols
       }
       secrets: [
         {
