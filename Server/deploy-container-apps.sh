@@ -77,10 +77,11 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
-# Step 1: Deploy infrastructure
+# Step 1: Deploy infrastructure with placeholder image
 echo ""
 echo -e "${GREEN}Step 1: Deploying Azure Container Apps infrastructure...${NC}"
 echo "  (This may take 5-10 minutes for PostgreSQL + Container Apps Environment)"
+echo "  Using placeholder image initially - will update after building CitrineOS"
 
 DEPLOYMENT_NAME="citrineos-ca-$(date +%Y%m%d-%H%M%S)"
 
@@ -93,7 +94,8 @@ if [ -n "$EXISTING_POSTGRES" ]; then
       environmentName="$ENVIRONMENT" \
       existingPostgresServer="$EXISTING_POSTGRES" \
       postgresPassword="$POSTGRES_PASSWORD" \
-      hasuraAdminSecret="$HASURA_SECRET"
+      hasuraAdminSecret="$HASURA_SECRET" \
+      usePlaceholderImage=true
 else
   az deployment group create \
     --name "$DEPLOYMENT_NAME" \
@@ -102,7 +104,8 @@ else
     --parameters \
       environmentName="$ENVIRONMENT" \
       postgresPassword="$POSTGRES_PASSWORD" \
-      hasuraAdminSecret="$HASURA_SECRET"
+      hasuraAdminSecret="$HASURA_SECRET" \
+      usePlaceholderImage=true
 fi
 
 echo -e "${GREEN}✓ Infrastructure deployed${NC}"
@@ -150,16 +153,67 @@ az acr build \
 
 echo -e "${GREEN}✓ Image built and pushed to ACR${NC}"
 
-# Step 4: Update container app to use ACR image
+# Step 4: Update container app with actual CitrineOS image and configuration
 echo ""
-echo -e "${GREEN}Step 4: Updating CitrineOS container app with ACR image...${NC}"
+echo -e "${GREEN}Step 4: Updating CitrineOS container app with full configuration...${NC}"
+echo "  (Redeploying with ACR image and environment variables)"
 
+# Get PostgreSQL server name
+POSTGRES_SERVER=$(az deployment group show \
+  --name "$DEPLOYMENT_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query properties.outputs.postgresServer.value -o tsv 2>/dev/null || echo "psql-${ENVIRONMENT}-citrineos.postgres.database.azure.com")
+
+# Get storage account name
+STORAGE_ACCOUNT=$(az deployment group show \
+  --name "$DEPLOYMENT_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query properties.outputs.storageAccountName.value -o tsv 2>/dev/null || az storage account list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv)
+
+# Get ACR password
+ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query passwords[0].value -o tsv)
+
+# Get storage connection string
+STORAGE_CONNECTION=$(az storage account show-connection-string --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query connectionString -o tsv)
+
+# Update container app with secrets, registry, and image
 az containerapp update \
   --name "ca-${ENVIRONMENT}-citrineos" \
   --resource-group "$RESOURCE_GROUP" \
-  --image "${ACR_LOGIN_SERVER}/citrineos/core:v1.0.0"
+  --set-env-vars \
+    "DB_HOST=$POSTGRES_SERVER" \
+    "DB_PORT=5432" \
+    "DB_USER=citrineos_admin" \
+    "DB_NAME=citrineos" \
+    "NODE_ENV=production"
 
-echo -e "${GREEN}✓ Container app updated${NC}"
+# Set secrets
+az containerapp secret set \
+  --name "ca-${ENVIRONMENT}-citrineos" \
+  --resource-group "$RESOURCE_GROUP" \
+  --secrets \
+    "db-password=$POSTGRES_PASSWORD" \
+    "storage-connection=$STORAGE_CONNECTION" \
+    "acr-password=$ACR_PASSWORD"
+
+# Configure registry and update image
+az containerapp registry set \
+  --name "ca-${ENVIRONMENT}-citrineos" \
+  --resource-group "$RESOURCE_GROUP" \
+  --server "$ACR_LOGIN_SERVER" \
+  --username "$ACR_NAME" \
+  --password "$ACR_PASSWORD"
+
+# Update with secret-based env vars and final image
+az containerapp update \
+  --name "ca-${ENVIRONMENT}-citrineos" \
+  --resource-group "$RESOURCE_GROUP" \
+  --image "${ACR_LOGIN_SERVER}/citrineos/core:v1.0.0" \
+  --set-env-vars \
+    "DB_PASSWORD=secretref:db-password" \
+    "STORAGE_CONNECTION_STRING=secretref:storage-connection"
+
+echo -e "${GREEN}✓ Container app updated with full configuration${NC}"
 
 # Save connection info
 echo ""

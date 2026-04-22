@@ -18,8 +18,11 @@ param postgresPassword string
 @secure()
 param hasuraAdminSecret string
 
-@description('CitrineOS container image (from ACR)')
-param citrineoImage string = 'citrineos/citrineos:latest'
+@description('CitrineOS container image (from ACR) - use placeholder for initial deployment')
+param citrineoImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+
+@description('Use placeholder image (true for initial deployment)')
+param usePlaceholderImage bool = true
 
 // ============================================================================
 // 1. CONTAINER REGISTRY
@@ -215,7 +218,8 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
-      registries: [
+      // Only configure ACR registry when using actual CitrineOS image
+      registries: usePlaceholderImage ? [] : [
         {
           server: acr.properties.loginServer
           username: acr.listCredentials().username
@@ -230,7 +234,7 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
         // Note: Container Apps supports WebSocket connections on the main ingress port
         // Configure CitrineOS to use port 8080 for all OCPP protocols
       }
-      secrets: [
+      secrets: usePlaceholderImage ? [] : [
         {
           name: 'db-password'
           value: postgresPassword
@@ -254,7 +258,8 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          env: [
+          // Only include env vars with secret refs when not using placeholder
+          env: usePlaceholderImage ? [] : [
             {
               name: 'DB_HOST'
               value: dbServer
