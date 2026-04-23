@@ -167,6 +167,16 @@ resource postgresDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2022-12
   name: 'citrineos'
 }
 
+// Enable required PostgreSQL extensions (pgcrypto required by Hasura)
+resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2022-12-01' = if (empty(existingPostgresServer)) {
+  parent: postgres
+  name: 'azure.extensions'
+  properties: {
+    value: 'pgcrypto'
+    source: 'user-override'
+  }
+}
+
 // ============================================================================
 // 6. STORAGE ACCOUNT (replaces MinIO)
 // ============================================================================
