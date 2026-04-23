@@ -330,6 +330,55 @@ resource hasuraApp 'Microsoft.App/containerApps@2023-05-01' = {
 }
 
 // ============================================================================
+// 10b. RABBITMQ CONTAINER APP (Message Broker)
+// ============================================================================
+
+resource rabbitmqApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${environmentName}-rabbitmq'
+  location: location
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: false
+        targetPort: 5672
+        transport: 'tcp'
+        exposedPort: 5672
+      }
+    }
+    template: {
+      containers: [
+        {
+          name: 'rabbitmq'
+          image: 'rabbitmq:3-management'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'RABBITMQ_DEFAULT_USER'
+              value: 'guest'
+            }
+            {
+              name: 'RABBITMQ_DEFAULT_PASS'
+              value: 'guest'
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 1
+      }
+    }
+  }
+  dependsOn: [
+    hasuraApp
+  ]
+}
+
+// ============================================================================
 // 11. CITRINEOS CONTAINER APP
 // ============================================================================
 
@@ -390,6 +439,10 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
           // CitrineOS requires BOOTSTRAP_CITRINEOS_* prefixed env vars (see 00_Base/src/config/defineConfig.ts)
           env: usePlaceholderImage ? [] : [
             {
+              name: 'APP_NAME'
+              value: 'all'  // EventGroup: all, router, modules, certificates, etc.
+            }
+            {
               name: 'APP_ENV'
               value: 'docker'
             }
@@ -425,6 +478,11 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'STORAGE_CONNECTION_STRING'
               secretRef: 'storage-connection'
             }
+            {
+              // Override AMQP URL to point to RabbitMQ container app (see README.md for env var naming)
+              name: 'CITRINEOS_util_messageBroker_amqp_url'
+              value: 'amqp://guest:guest@ca-${environmentName}-rabbitmq:5672'
+            }
           ]
         }
       ]
@@ -446,6 +504,7 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
   dependsOn: [
     hasuraApp
+    rabbitmqApp
   ]
 }
 
