@@ -69,16 +69,19 @@ check_prerequisites() {
 }
 
 # ============================================================================
-# STEP 2: Create Resource Group
+# STEP 2: Check Resource Group Exists
 # ============================================================================
 create_resource_group() {
-    log_step "Creating resource group: $RESOURCE_GROUP"
+    log_step "Checking resource group: $RESOURCE_GROUP"
     
     if az group show --name "$RESOURCE_GROUP" &>/dev/null; then
-        log_warn "Resource group already exists"
+        log_info "Resource group exists in $(az group show --name "$RESOURCE_GROUP" --query location -o tsv)"
     else
-        az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
-        log_info "Resource group created in $LOCATION"
+        log_error "Resource group '$RESOURCE_GROUP' does not exist."
+        log_error "Please ask your DevOps team to create it, or set RESOURCE_GROUP to an existing one."
+        log_error "Available resource groups:"
+        az group list --query "[].name" -o tsv | sed 's/^/  - /'
+        exit 1
     fi
 }
 
@@ -200,12 +203,13 @@ update_container_app() {
         --resource-group "$RESOURCE_GROUP" \
         --image "$image" \
         --set-env-vars \
+            "APP_ENV=docker" \
+            "NODE_ENV=production" \
             "BOOTSTRAP_CITRINEOS_DATABASE_HOST=psql-${ENVIRONMENT}-citrineos.postgres.database.azure.com" \
             "BOOTSTRAP_CITRINEOS_DATABASE_PORT=5432" \
-            "BOOTSTRAP_CITRINEOS_DATABASE_USER=citrineos_admin" \
+            "BOOTSTRAP_CITRINEOS_DATABASE_USERNAME=citrineos_admin" \
             "BOOTSTRAP_CITRINEOS_DATABASE_NAME=citrineos" \
             "BOOTSTRAP_CITRINEOS_DATABASE_SSL_REQUIRE=true" \
-            "NODE_ENV=production" \
         --output none
     
     # Set secrets

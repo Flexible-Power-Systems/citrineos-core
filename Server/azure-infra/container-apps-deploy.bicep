@@ -41,7 +41,9 @@ resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
 // 2. KEY VAULT
 // ============================================================================
 
-var keyVaultNameGenerated = 'kv-${environmentName}-${uniqueString(resourceGroup().id)}'
+// Use a unique suffix to avoid conflicts with soft-deleted vaults
+// Changed from v3 to v4 to get a fresh vault name; enablePurgeProtection set to true
+var keyVaultNameGenerated = 'kv${environmentName}${substring(uniqueString(resourceGroup().id, 'v4'), 0, 8)}'
 var keyVaultNameToUse = empty(existingKeyVaultName) ? keyVaultNameGenerated : existingKeyVaultName
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (empty(existingKeyVaultName)) {
@@ -55,8 +57,8 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (empty(existingKey
     tenantId: subscription().tenantId
     enableRbacAuthorization: true // Use RBAC instead of access policies
     enableSoftDelete: true
-    softDeleteRetentionInDays: 30
-    enablePurgeProtection: false // Set to true for production
+    softDeleteRetentionInDays: 7
+    enablePurgeProtection: true  // Cannot be disabled once enabled - set to true for consistency
     publicNetworkAccess: 'Enabled'
   }
 }
@@ -388,6 +390,14 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
           // CitrineOS requires BOOTSTRAP_CITRINEOS_* prefixed env vars (see 00_Base/src/config/defineConfig.ts)
           env: usePlaceholderImage ? [] : [
             {
+              name: 'APP_ENV'
+              value: 'docker'
+            }
+            {
+              name: 'NODE_ENV'
+              value: 'production'
+            }
+            {
               name: 'BOOTSTRAP_CITRINEOS_DATABASE_HOST'
               value: dbServer
             }
@@ -396,7 +406,7 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: '5432'
             }
             {
-              name: 'BOOTSTRAP_CITRINEOS_DATABASE_USER'
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_USERNAME'
               value: 'citrineos_admin'
             }
             {
@@ -414,10 +424,6 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'STORAGE_CONNECTION_STRING'
               secretRef: 'storage-connection'
-            }
-            {
-              name: 'NODE_ENV'
-              value: 'production'
             }
           ]
         }
