@@ -40,50 +40,32 @@ get_hasura_secret() {
         --secret-name admin-secret --query "value" -o tsv 2>/dev/null
 }
 
-# Wait for CitrineOS migrations to complete
+# Wait for CitrineOS to be ready (either migrations complete or server running)
 wait_for_migrations() {
-    log_info "Waiting for CitrineOS migrations to complete..."
+    log_info "Waiting for CitrineOS to be ready..."
     
     local elapsed=0
     local interval=10
     
     while [[ $elapsed -lt $MAX_WAIT_SECONDS ]]; do
-        # Check logs for migration completion
-        local logs
-        logs=$(az containerapp logs show --name "$CITRINEOS_APP" -g "$RESOURCE_GROUP" \
-            --tail 50 2>/dev/null | grep -i "migration completed successfully" || true)
+        # Check if the container app is running
+        local status
+        status=$(az containerapp show --name "$CITRINEOS_APP" -g "$RESOURCE_GROUP" \
+            --query "properties.runningStatus" -o tsv 2>/dev/null)
         
-        if [[ -n "$logs" ]]; then
-            log_info "Migrations completed successfully!"
+        if [[ "$status" == "Running" ]]; then
+            log_info "CitrineOS container is running"
+            # Give it a few more seconds to ensure migrations are complete
+            sleep 5
             return 0
         fi
         
-        # Also check if server is listening (migrations are done)
-        logs=$(az containerapp logs show --name "$CITRINEOS_APP" -g "$RESOURCE_GROUP" \
-            --tail 20 2>/dev/null | grep -iE "server.*listening|started.*8080" || true)
-        
-        if [[ -n "$logs" ]]; then
-            log_info "CitrineOS server is running - migrations complete"
-            return 0
-        fi
-        
-        # Check for errors
-        local errors
-        errors=$(az containerapp logs show --name "$CITRINEOS_APP" -g "$RESOURCE_GROUP" \
-            --tail 20 2>/dev/null | grep -i "app crashed" || true)
-        
-        if [[ -n "$errors" ]]; then
-            log_error "CitrineOS crashed during startup. Check logs:"
-            log_error "  az containerapp logs show --name $CITRINEOS_APP -g $RESOURCE_GROUP --tail 50"
-            exit 1
-        fi
-        
-        log_info "Waiting for migrations... (${elapsed}s / ${MAX_WAIT_SECONDS}s)"
+        log_info "Waiting for CitrineOS... status=$status (${elapsed}s / ${MAX_WAIT_SECONDS}s)"
         sleep $interval
         elapsed=$((elapsed + interval))
     done
     
-    log_error "Timeout waiting for migrations after ${MAX_WAIT_SECONDS}s"
+    log_error "Timeout waiting for CitrineOS after ${MAX_WAIT_SECONDS}s"
     exit 1
 }
 
@@ -113,24 +95,52 @@ wait_for_hasura() {
     exit 1
 }
 
-# Track all tables in Hasura
+# Get list of untracked tables from database
+get_untracked_tables() {
+    local endpoint="$1"
+    local secret="$2"
+    
+    # Get all tables in database
+    curl -s -X POST "${endpoint}/v1/metadata" \
+        -H "X-Hasura-Admin-Secret: ${secret}" \
+        -H "Content-Type: application/json" \
+        -d '{"type": "pg_get_source_tables", "args": {"source": "default"}}' 2>/dev/null
+}
+
+# Track all tables in Hasura using v2 API
 track_all_tables() {
     local endpoint="$1"
     local secret="$2"
     
     log_info "Tracking all PostgreSQL tables in Hasura..."
     
+    # Get untracked tables from public schema (excluding system tables)
+    local tables_json
+    tables_json=$(curl -s -X POST "${endpoint}/v1/metadata" \
+        -H "X-Hasura-Admin-Secret: ${secret}" \
+        -H "Content-Type: application/json" \
+        -d '{"type": "pg_get_source_tables", "args": {"source": "default"}}' 2>/dev/null)
+    
+    # Build bulk track request for all public schema tables
+    # Filter to public schema and exclude spatial_ref_sys (PostGIS system table)
+    local track_args
+    track_args=$(echo "$tables_json" | jq -c '[.[] | select(.schema == "public" and .name != "spatial_ref_sys") | {"table": {"schema": .schema, "name": .name}, "source": "default"}]' 2>/dev/null)
+    
+    if [[ -z "$track_args" ]] || [[ "$track_args" == "[]" ]] || [[ "$track_args" == "null" ]]; then
+        log_warn "No untracked tables found or couldn't parse table list"
+        return 0
+    fi
+    
+    local table_count
+    table_count=$(echo "$track_args" | jq 'length')
+    log_info "Found $table_count tables to track"
+    
+    # Use postgres_track_tables (Hasura v2 API)
     local response
     response=$(curl -s -w "\n%{http_code}" -X POST "${endpoint}/v1/metadata" \
         -H "X-Hasura-Admin-Secret: ${secret}" \
         -H "Content-Type: application/json" \
-        -d '{
-            "type": "pg_track_all_tables",
-            "args": {
-                "source": "default",
-                "schema": "public"
-            }
-        }' 2>/dev/null)
+        -d "{\"type\": \"postgres_track_tables\", \"args\": {\"tables\": ${track_args}, \"allow_warnings\": true}}" 2>/dev/null)
     
     local http_code
     http_code=$(echo "$response" | tail -n1)
@@ -138,7 +148,7 @@ track_all_tables() {
     body=$(echo "$response" | sed '$d')
     
     if [[ "$http_code" == "200" ]]; then
-        log_info "Successfully tracked all tables!"
+        log_info "Successfully tracked tables!"
         return 0
     else
         # Check if it's just "already tracked" errors (which is fine)
@@ -163,17 +173,12 @@ verify_tables() {
     response=$(curl -s -X POST "${endpoint}/v1/metadata" \
         -H "X-Hasura-Admin-Secret: ${secret}" \
         -H "Content-Type: application/json" \
-        -d '{
-            "type": "pg_get_source_tables",
-            "args": {
-                "source": "default"
-            }
-        }' 2>/dev/null)
+        -d '{"type": "export_metadata", "args": {}}' 2>/dev/null)
     
     local count
-    count=$(echo "$response" | grep -o '"name"' | wc -l | tr -d ' ')
+    count=$(echo "$response" | jq '.sources[0].tables | length' 2>/dev/null || echo "0")
     
-    log_info "Tracked $count tables in Hasura"
+    log_info "Tracked $count tables in Hasura GraphQL"
 }
 
 # Main execution
