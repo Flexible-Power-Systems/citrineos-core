@@ -167,12 +167,15 @@ resource postgresDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2022-12
   name: 'citrineos'
 }
 
-// Enable required PostgreSQL extensions (pgcrypto required by Hasura)
+// Enable required PostgreSQL extensions:
+// - pgcrypto: required by Hasura
+// - postgis: required for geometry/location data types
+// - citext: required for case-insensitive text columns
 resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2022-12-01' = if (empty(existingPostgresServer)) {
   parent: postgres
   name: 'azure.extensions'
   properties: {
-    value: 'pgcrypto'
+    value: 'pgcrypto,postgis,citext'
     source: 'user-override'
   }
 }
@@ -382,27 +385,31 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          // Only include env vars with secret refs when not using placeholder
+          // CitrineOS requires BOOTSTRAP_CITRINEOS_* prefixed env vars (see 00_Base/src/config/defineConfig.ts)
           env: usePlaceholderImage ? [] : [
             {
-              name: 'DB_HOST'
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_HOST'
               value: dbServer
             }
             {
-              name: 'DB_PORT'
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_PORT'
               value: '5432'
             }
             {
-              name: 'DB_USER'
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_USER'
               value: 'citrineos_admin'
             }
             {
-              name: 'DB_PASSWORD'
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_PASSWORD'
               secretRef: 'db-password'
             }
             {
-              name: 'DB_NAME'
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_NAME'
               value: 'citrineos'
+            }
+            {
+              name: 'BOOTSTRAP_CITRINEOS_DATABASE_SSL_REQUIRE'
+              value: 'true'
             }
             {
               name: 'STORAGE_CONNECTION_STRING'
