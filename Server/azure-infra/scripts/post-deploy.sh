@@ -8,6 +8,7 @@ set -e
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-citrine-ev-dev}"
 CITRINEOS_APP="${CITRINEOS_APP:-ca-dev-citrineos}"
 HASURA_APP="${HASURA_APP:-ca-dev-hasura}"
+HASURA_ADMIN_SECRET="${HASURA_ADMIN_SECRET:-}"  # Pass from bootstrap.sh or Key Vault
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-300}"  # 5 minutes max wait for migrations
 
 # Colors for output
@@ -34,10 +35,38 @@ get_hasura_endpoint() {
     echo "https://$fqdn"
 }
 
-# Get Hasura admin secret from container app secrets
+# Get Hasura admin secret (from env var, container app, or Key Vault)
 get_hasura_secret() {
-    az containerapp secret show --name "$HASURA_APP" -g "$RESOURCE_GROUP" \
-        --secret-name admin-secret --query "value" -o tsv 2>/dev/null
+    # First check if passed via environment variable
+    if [[ -n "$HASURA_ADMIN_SECRET" ]]; then
+        echo "$HASURA_ADMIN_SECRET"
+        return 0
+    fi
+    
+    # Try container app secrets
+    local secret
+    secret=$(az containerapp secret show --name "$HASURA_APP" -g "$RESOURCE_GROUP" \
+        --secret-name admin-secret --query "value" -o tsv 2>/dev/null)
+    
+    if [[ -n "$secret" ]]; then
+        echo "$secret"
+        return 0
+    fi
+    
+    # Try Key Vault (find KV in resource group)
+    local kv_name
+    kv_name=$(az keyvault list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv 2>/dev/null)
+    
+    if [[ -n "$kv_name" ]]; then
+        secret=$(az keyvault secret show --vault-name "$kv_name" \
+            --name hasura-admin-secret --query "value" -o tsv 2>/dev/null)
+        if [[ -n "$secret" ]]; then
+            echo "$secret"
+            return 0
+        fi
+    fi
+    
+    echo ""
 }
 
 # Wait for CitrineOS to be ready (either migrations complete or server running)

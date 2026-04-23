@@ -247,6 +247,7 @@ configure_hasura() {
     export RESOURCE_GROUP
     export CITRINEOS_APP="ca-${ENVIRONMENT}-citrineos"
     export HASURA_APP="ca-${ENVIRONMENT}-hasura"
+    export HASURA_ADMIN_SECRET
     
     "$SCRIPT_DIR/post-deploy.sh"
 }
