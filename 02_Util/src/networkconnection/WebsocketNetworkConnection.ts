@@ -210,10 +210,23 @@ export class WebsocketNetworkConnection implements INetworkConnection {
   }
 
   private _onHttpRequest(req: http.IncomingMessage, res: http.ServerResponse) {
-    if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'healthy' }));
-    } else {
+    // Proxy all HTTP requests to the central system's REST API (Fastify) running on its configured port.
+    // This allows a single externally-exposed port to serve both WebSocket (OCPP) and REST (management API) traffic.
+    const apiPort = this._config.centralSystem.port;
+    const proxyReq = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: apiPort,
+        path: req.url,
+        method: req.method,
+        headers: req.headers,
+      },
+      (proxyRes) => {
+        res.writeHead(proxyRes.statusCode!, proxyRes.headers);
+        proxyRes.pipe(res, { end: true });
+      },
+    );
+    proxyReq.on('error', () => {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -222,7 +235,8 @@ export class WebsocketNetworkConnection implements INetworkConnection {
           statusCode: 404,
         }),
       );
-    }
+    });
+    req.pipe(proxyReq, { end: true });
   }
 
   /**

@@ -176,6 +176,21 @@ resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01'
               value: '/config/config-sil-two-evse-flow.json'
             }
           ]
+          // Patch MQTT broker hostname in flows before starting Node-RED.
+          // The default image flows reference 'mqtt-server' which is the Docker Compose
+          // service name. In ACI, all containers share localhost.
+          command: [
+            '/bin/sh'
+            '-c'
+            '''
+            # Patch MQTT broker hostname from docker-compose service name to localhost
+            sed -i 's/"broker":"mqtt-server"/"broker":"localhost"/g' /config/config-sil-two-evse-flow.json
+            sed -i 's/"broker": "mqtt-server"/"broker": "localhost"/g' /config/config-sil-two-evse-flow.json
+            
+            # Start Node-RED with the patched flows
+            exec node-red --userDir /data --flowFile /config/config-sil-two-evse-flow.json
+            '''
+          ]
         }
       }
     ]

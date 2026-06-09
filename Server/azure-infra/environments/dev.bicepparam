@@ -1,11 +1,14 @@
 // Development Environment
 // Resource Group: fps_server_dev (to be created)
 // Purpose: Active development and integration testing
+// NOTE: Uses container-apps-deploy.bicep (Container Apps, not ACI)
+// minReplicas for CitrineOS is set to 1 in the template — do not override to 0
+// as this breaks OCPP WebSocket connections (charger emulator reconnect fails).
 
-using './quick-deploy.bicep'
+using './container-apps-deploy.bicep'
 
 param environmentName = 'dev'
-param location = 'eastus'
+param location = 'uksouth'
 
 // Database Configuration
 param postgresPassword = '' // Will be prompted or from Key Vault

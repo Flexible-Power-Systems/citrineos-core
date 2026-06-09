@@ -13,7 +13,7 @@ BICEP_FILE="$SCRIPT_DIR/../container-apps-deploy.bicep"
 
 # Configuration
 ENVIRONMENT="${1:-dev}"
-RESOURCE_GROUP="rg-citrine-ev-${ENVIRONMENT}"
+RESOURCE_GROUP="rg-citrine-os-${ENVIRONMENT}"
 LOCATION="${AZURE_LOCATION:-uksouth}"
 IMAGE_TAG="${IMAGE_TAG:-v1.0.0}"
 
@@ -277,6 +277,21 @@ print_summary() {
     echo -e "  ${BLUE}CitrineOS:${NC}         https://${citrineos_fqdn}"
     echo -e "  ${BLUE}OCPP WebSocket:${NC}    wss://${citrineos_fqdn}/{CHARGER_ID}"
     echo -e "  ${BLUE}Hasura Console:${NC}    https://${hasura_fqdn}/console"
+    
+    local ocpi_fqdn
+    ocpi_fqdn=$(az containerapp show --name "ca-${ENVIRONMENT}-citrineos-ocpi" -g "$RESOURCE_GROUP" \
+        --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
+    if [[ -n "$ocpi_fqdn" ]]; then
+        echo -e "  ${BLUE}OCPI Server:${NC}       https://${ocpi_fqdn}"
+        echo -e "  ${BLUE}OCPI Swagger:${NC}      https://${ocpi_fqdn}/ocpi/swagger"
+    fi
+    
+    local operator_ui_fqdn
+    operator_ui_fqdn=$(az containerapp show --name "ca-${ENVIRONMENT}-operator-ui" -g "$RESOURCE_GROUP" \
+        --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
+    if [[ -n "$operator_ui_fqdn" ]]; then
+        echo -e "  ${BLUE}Operator UI:${NC}       https://${operator_ui_fqdn}"
+    fi
     echo ""
     echo -e "  ${BLUE}Hasura Admin Secret:${NC} $HASURA_ADMIN_SECRET"
     echo ""

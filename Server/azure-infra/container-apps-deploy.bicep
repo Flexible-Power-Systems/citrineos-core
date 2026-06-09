@@ -22,6 +22,9 @@ param hasuraAdminSecret string
 @description('CitrineOS container image (from ACR) - use placeholder for initial deployment')
 param citrineoImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
+@description('CitrineOS OCPI container image (from ACR)')
+param ocpiImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+
 @description('Use placeholder image (true for initial deployment)')
 param usePlaceholderImage bool = true
 
@@ -404,7 +407,8 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
       ]
       ingress: {
         external: true
-        targetPort: 8080  // Main HTTP port - CitrineOS handles OCPP WebSocket here
+        targetPort: 8081  // WebSocket port (security profile 0) - OCPP chargers connect here
+        transport: 'auto'  // Required for WebSocket upgrade support
         transport: 'http'
         allowInsecure: false
         // Note: Container Apps supports WebSocket connections on the main ingress port
@@ -509,6 +513,197 @@ resource citrineoApp 'Microsoft.App/containerApps@2023-05-01' = {
 }
 
 // ============================================================================
+// 12. CITRINEOS OCPI CONTAINER APP
+// ============================================================================
+
+resource ocpiApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${environmentName}-citrineos-ocpi'
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      registries: usePlaceholderImage ? [] : [
+        {
+          server: acr.properties.loginServer
+          username: acr.listCredentials().username
+          passwordSecretRef: 'acr-password'
+        }
+      ]
+      ingress: {
+        external: true
+        targetPort: 8085
+        transport: 'http'
+        allowInsecure: false
+      }
+      secrets: usePlaceholderImage ? [] : [
+        {
+          name: 'acr-password'
+          value: acr.listCredentials().passwords[0].value
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'citrineos-ocpi'
+          image: ocpiImage
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: usePlaceholderImage ? [] : [
+            {
+              name: 'APP_NAME'
+              value: 'all'
+            }
+            {
+              name: 'APP_ENV'
+              value: 'docker'
+            }
+            {
+              name: 'DB_HOST'
+              value: dbServer
+            }
+            {
+              name: 'DB_PORT'
+              value: '5432'
+            }
+            {
+              name: 'DB_NAME'
+              value: 'citrineos'
+            }
+            {
+              name: 'DB_USER'
+              value: 'citrineos_admin'
+            }
+            {
+              name: 'DB_PASS'
+              value: postgresPassword
+            }
+            {
+              name: 'DB_SSL'
+              value: 'true'
+            }
+            {
+              name: 'GRAPHQL_ENDPOINT'
+              value: 'https://${hasuraApp.properties.configuration.ingress.fqdn}/v1/graphql'
+            }
+            {
+              name: 'GRAPHQL_HEADERS'
+              value: '{"x-hasura-admin-secret":"${hasuraAdminSecret}"}'
+            }
+            {
+              name: 'AMQP_URL'
+              value: 'amqp://guest:guest@ca-${environmentName}-rabbitmq.internal.${containerAppEnv.properties.defaultDomain}:5672'
+            }
+            {
+              name: 'AMQP_EXCHANGE'
+              value: 'ocpi'
+            }
+            {
+              name: 'COMMANDS_OCPP_REQUESTSTARTTRANSACTION'
+              value: 'http://ca-${environmentName}-citrineos.internal.${containerAppEnv.properties.defaultDomain}:8080/data/monitoring/requeststarttransaction'
+            }
+            {
+              name: 'COMMANDS_OCPP_REQUESTSTOPTRANSACTION'
+              value: 'http://ca-${environmentName}-citrineos.internal.${containerAppEnv.properties.defaultDomain}:8080/data/monitoring/requeststoptransaction'
+            }
+            {
+              name: 'LOG_LEVEL'
+              value: '2'
+            }
+          ]
+          probes: [
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/ocpi/health'
+                port: 8085
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              failureThreshold: 30
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 2
+      }
+    }
+  }
+  dependsOn: [
+    hasuraApp
+    rabbitmqApp
+    citrineoApp
+  ]
+}
+
+// ============================================================================
+// 13. OPERATOR UI CONTAINER APP
+// ============================================================================
+
+resource operatorUiApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${environmentName}-operator-ui'
+  location: location
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 3000
+        transport: 'http'
+        allowInsecure: false
+      }
+    }
+    template: {
+      containers: [
+        {
+          name: 'operator-ui'
+          image: 'citrineos/operator-ui:latest'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'VITE_HASURA_URL'
+              value: 'https://${hasuraApp.properties.configuration.ingress.fqdn}/v1/graphql'
+            }
+            {
+              name: 'VITE_HASURA_WS_URL'
+              value: 'wss://${hasuraApp.properties.configuration.ingress.fqdn}/v1/graphql'
+            }
+            {
+              name: 'VITE_HASURA_ADMIN_SECRET'
+              value: hasuraAdminSecret
+            }
+            {
+              name: 'VITE_CITRINEOS_URL'
+              value: 'https://${citrineoApp.properties.configuration.ingress.fqdn}'
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 1
+      }
+    }
+  }
+  dependsOn: [
+    hasuraApp
+  ]
+}
+
+// ============================================================================
 // OUTPUTS
 // ============================================================================
 
@@ -516,6 +711,8 @@ output acrLoginServer string = acr.properties.loginServer
 output acrName string = acr.name
 output hasuraUrl string = 'https://${hasuraApp.properties.configuration.ingress.fqdn}'
 output citrineosFqdn string = citrineoApp.properties.configuration.ingress.fqdn
+output ocpiFqdn string = ocpiApp.properties.configuration.ingress.fqdn
+output operatorUiFqdn string = operatorUiApp.properties.configuration.ingress.fqdn
 output containerAppEnvName string = containerAppEnv.name
 
 // Key Vault outputs

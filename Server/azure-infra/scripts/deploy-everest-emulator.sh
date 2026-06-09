@@ -9,7 +9,7 @@ set -e
 
 # Default values
 ENVIRONMENT="${1:-dev}"
-RESOURCE_GROUP="rg-citrine-ev-${ENVIRONMENT}"
+RESOURCE_GROUP="rg-citrine-os-${ENVIRONMENT}"
 LOCATION="uksouth"
 EVEREST_IMAGE_TAG="0.0.23"
 

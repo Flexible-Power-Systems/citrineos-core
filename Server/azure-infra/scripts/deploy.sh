@@ -11,7 +11,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Configuration
 ENVIRONMENT="${1:-dev}"
 IMAGE_TAG="${2:-latest}"
-RESOURCE_GROUP="rg-citrine-ev-${ENVIRONMENT}"
+RESOURCE_GROUP="rg-citrine-os-${ENVIRONMENT}"
 
 # Colors
 RED='\033[0;31m'
@@ -48,6 +48,30 @@ build_image() {
     log_info "Image built: ${acr_name}.azurecr.io/citrineos/core:${tag}"
 }
 
+# Build and push OCPI image to ACR
+build_ocpi_image() {
+    local acr_name="$1"
+    local tag="$2"
+    
+    local ocpi_dir="$REPO_ROOT/../citrineos-ocpi"
+    if [[ ! -d "$ocpi_dir" ]]; then
+        log_warn "citrineos-ocpi directory not found at $ocpi_dir - skipping OCPI build"
+        return 0
+    fi
+    
+    log_step "Building CitrineOS OCPI image in ACR..."
+    
+    cd "$ocpi_dir"
+    
+    az acr build \
+        --registry "$acr_name" \
+        --image "citrineos-ocpi:${tag}" \
+        --file Server/azure.Dockerfile \
+        .
+    
+    log_info "Image built: ${acr_name}.azurecr.io/citrineos-ocpi:${tag}"
+}
+
 # Update container app with new image
 update_container_app() {
     local acr_name="$1"
@@ -61,6 +85,27 @@ update_container_app() {
         --image "${acr_name}.azurecr.io/citrineos/core:${tag}"
     
     log_info "Container app updated to image: citrineos/core:${tag}"
+}
+
+# Update OCPI container app with new image
+update_ocpi_container_app() {
+    local acr_name="$1"
+    local tag="$2"
+    
+    # Check if OCPI container app exists
+    if ! az containerapp show --name "ca-${ENVIRONMENT}-citrineos-ocpi" -g "$RESOURCE_GROUP" &>/dev/null; then
+        log_warn "OCPI container app not found - skipping update"
+        return 0
+    fi
+    
+    log_step "Updating CitrineOS OCPI container app..."
+    
+    az containerapp update \
+        --name "ca-${ENVIRONMENT}-citrineos-ocpi" \
+        --resource-group "$RESOURCE_GROUP" \
+        --image "${acr_name}.azurecr.io/citrineos-ocpi:${tag}"
+    
+    log_info "OCPI container app updated to image: citrineos-ocpi:${tag}"
 }
 
 # Run post-deployment configuration
@@ -108,8 +153,14 @@ main() {
     # Build image
     build_image "$acr_name" "$IMAGE_TAG"
     
+    # Build OCPI image
+    build_ocpi_image "$acr_name" "$IMAGE_TAG"
+    
     # Update container app
     update_container_app "$acr_name" "$IMAGE_TAG"
+    
+    # Update OCPI container app
+    update_ocpi_container_app "$acr_name" "$IMAGE_TAG"
     
     # Post-deployment (wait for migrations, track tables)
     run_post_deploy
@@ -119,6 +170,8 @@ main() {
     echo ""
     log_info "CitrineOS: https://ca-${ENVIRONMENT}-citrineos.$(az containerapp show --name ca-${ENVIRONMENT}-citrineos -g $RESOURCE_GROUP --query 'properties.configuration.ingress.fqdn' -o tsv | cut -d'.' -f2-)"
     log_info "Hasura Console: https://$(az containerapp show --name ca-${ENVIRONMENT}-hasura -g $RESOURCE_GROUP --query 'properties.configuration.ingress.fqdn' -o tsv)/console"
+    log_info "OCPI: https://$(az containerapp show --name ca-${ENVIRONMENT}-citrineos-ocpi -g $RESOURCE_GROUP --query 'properties.configuration.ingress.fqdn' -o tsv 2>/dev/null || echo 'not deployed')"
+    log_info "Operator UI: https://$(az containerapp show --name ca-${ENVIRONMENT}-operator-ui -g $RESOURCE_GROUP --query 'properties.configuration.ingress.fqdn' -o tsv 2>/dev/null || echo 'not deployed')"
 }
 
 main "$@"

@@ -1,11 +1,15 @@
 // Pre-Dev Environment (POC/Testing)
 // Resource Group: rg-citrine-ev-dev
 // Purpose: Initial proof-of-concept and charger testing
+// NOTE: Uses container-apps-deploy.bicep (Container Apps, not ACI)
+// This matches the actual live rg-citrine-ev-dev deployment.
+// minReplicas for CitrineOS is set to 1 in the template to prevent scale-to-zero
+// breaking OCPP WebSocket connections from the charger emulator.
 
-using './quick-deploy.bicep'
+using './container-apps-deploy.bicep'
 
-param environmentName = 'predev'
-param location = 'eastus'
+param environmentName = 'dev'
+param location = 'uksouth'
 
 // Use existing resource group provided by DevOps
 // Deploy with: az deployment group create --resource-group rg-citrine-ev-dev

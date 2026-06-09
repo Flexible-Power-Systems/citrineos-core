@@ -5,7 +5,7 @@
 set -e
 
 # Configuration (can be overridden via environment variables)
-RESOURCE_GROUP="${RESOURCE_GROUP:-rg-citrine-ev-dev}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-rg-citrine-os-dev}"
 CITRINEOS_APP="${CITRINEOS_APP:-ca-dev-citrineos}"
 HASURA_APP="${HASURA_APP:-ca-dev-hasura}"
 HASURA_ADMIN_SECRET="${HASURA_ADMIN_SECRET:-}"  # Pass from bootstrap.sh or Key Vault
@@ -210,6 +210,74 @@ verify_tables() {
     log_info "Tracked $count tables in Hasura GraphQL"
 }
 
+# Create Hasura relationships required by the Operator UI
+# Tracking tables alone is not enough - the UI queries join across tables
+# using relationships that must be explicitly created in Hasura metadata.
+create_hasura_relationships() {
+    local endpoint="$1"
+    local secret="$2"
+    
+    log_info "Creating Hasura relationships for Operator UI..."
+    
+    # Helper function to create a relationship (ignores "already exists" errors)
+    create_relationship() {
+        local rel_type="$1"
+        local payload="$2"
+        local desc="$3"
+        
+        local response
+        response=$(curl -s -X POST "${endpoint}/v1/metadata" \
+            -H "X-Hasura-Admin-Secret: ${secret}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" 2>/dev/null)
+        
+        if echo "$response" | grep -q '"message":"success"'; then
+            log_info "  Created: $desc"
+        elif echo "$response" | grep -q "already exists"; then
+            log_info "  Exists:  $desc"
+        else
+            log_warn "  Failed:  $desc - $response"
+        fi
+    }
+    
+    # ChargingStations -> Location (object, via locationId FK)
+    create_relationship "object" \
+        '{"type":"pg_create_object_relationship","args":{"source":"default","table":"ChargingStations","name":"Location","using":{"foreign_key_constraint_on":"locationId"}}}' \
+        "ChargingStations.Location"
+    
+    # ChargingStations -> Evses (array, via Evses.stationId FK)
+    create_relationship "array" \
+        '{"type":"pg_create_array_relationship","args":{"source":"default","table":"ChargingStations","name":"Evses","using":{"foreign_key_constraint_on":{"table":"Evses","column":"stationId"}}}}' \
+        "ChargingStations.Evses"
+    
+    # ChargingStations -> LatestStatusNotifications (array)
+    create_relationship "array" \
+        '{"type":"pg_create_array_relationship","args":{"source":"default","table":"ChargingStations","name":"LatestStatusNotifications","using":{"foreign_key_constraint_on":{"table":"LatestStatusNotifications","column":"stationId"}}}}' \
+        "ChargingStations.LatestStatusNotifications"
+    
+    # ChargingStations -> Transactions (array, via Transactions.stationId FK)
+    create_relationship "array" \
+        '{"type":"pg_create_array_relationship","args":{"source":"default","table":"ChargingStations","name":"Transactions","using":{"foreign_key_constraint_on":{"table":"Transactions","column":"stationId"}}}}' \
+        "ChargingStations.Transactions"
+    
+    # ChargingStations -> Connectors (array, via Connectors.stationId FK)
+    create_relationship "array" \
+        '{"type":"pg_create_array_relationship","args":{"source":"default","table":"ChargingStations","name":"Connectors","using":{"foreign_key_constraint_on":{"table":"Connectors","column":"stationId"}}}}' \
+        "ChargingStations.Connectors"
+    
+    # LatestStatusNotifications -> StatusNotification (object, via statusNotificationId FK)
+    create_relationship "object" \
+        '{"type":"pg_create_object_relationship","args":{"source":"default","table":"LatestStatusNotifications","name":"StatusNotification","using":{"foreign_key_constraint_on":"statusNotificationId"}}}' \
+        "LatestStatusNotifications.StatusNotification"
+    
+    # Evses -> Connectors (array, via Connectors.evseId FK -> Evses.id)
+    create_relationship "array" \
+        '{"type":"pg_create_array_relationship","args":{"source":"default","table":"Evses","name":"Connectors","using":{"foreign_key_constraint_on":{"table":"Connectors","column":"evseId"}}}}' \
+        "Evses.Connectors"
+    
+    log_info "Hasura relationships configured"
+}
+
 # Main execution
 main() {
     log_info "Starting post-deployment configuration..."
@@ -237,6 +305,7 @@ main() {
     
     # Configure Hasura
     track_all_tables "$hasura_endpoint" "$hasura_secret"
+    create_hasura_relationships "$hasura_endpoint" "$hasura_secret"
     verify_tables "$hasura_endpoint" "$hasura_secret"
     
     echo ""
