@@ -1,0 +1,4 @@
+version: 3
+endpoint: https://ca-dev-hasura.orangesmoke-0ef63f5b.uksouth.azurecontainerapps.io
+admin_secret: myadminsecretkey
+metadata_directory: hasura-metadata

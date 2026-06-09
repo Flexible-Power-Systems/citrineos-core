@@ -1,0 +1,7 @@
+# Ignore deployment secrets and connection info
+azure-deployment-info.txt
+*.bicepparam
+.env.azure
+
+# Ignore Azure CLI outputs
+deployment-outputs.json
